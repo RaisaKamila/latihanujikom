@@ -62,3 +62,37 @@ if (isset($_POST['login'])) {
 
 </body>
 </html>
+
+
+$email    = trim($_POST['email']);
+$password = $_POST['password'];
+
+$stmt = $conn->prepare("
+    SELECT * FROM users
+    WHERE email = ?
+    LIMIT 1
+");
+$stmt->execute([$email]);
+$user = $stmt->fetch();
+
+if ($user && password_verify($password, $user['password'])) {
+
+    session_regenerate_id(true);
+
+    $_SESSION['login'] = true;
+    $_SESSION['user_id'] = $user['user_id'];
+    $_SESSION['nama']  = $user['nama'];
+    $_SESSION['role']  = $user['role'];
+
+    if ($user['role'] == 'admin') {
+        header("Location: admin/dashboard.php");
+    } elseif ($user['role'] == 'siswa') {
+        header("Location: siswa/dashboard.php");
+    } elseif ($user['role'] == 'teknisi') {
+        header("Location: teknisi/dashboard.php");
+    }
+    exit;
+} else {
+    $error = "email atau password salah!";
+}
+

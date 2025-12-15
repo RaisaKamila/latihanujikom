@@ -2,211 +2,137 @@
 session_start();
 require '../config.php';
 
-if (!isset($_SESSION['login']) || $_SESSION['role'] != 'admin') {
+/* ===============================
+   CEK LOGIN
+================================ */
+if (!isset($_SESSION['login'])) {
     header("Location: login.php");
     exit;
 }
 
 $user_id = $_SESSION['user_id'];
+$role    = $_SESSION['role'];
 
-if (!function_exists('triggerTask')) {
-    function triggerTask($conn, $request_id, $user_id, $status_admin, $status_teknisi, $keterangan, $technician_id = null)
-    {
-        $conn->prepare("
-            INSERT INTO task_log
-            (request_id, user_id, status_admin, status_teknisi, keterangan)
-            VALUES (?, ?, ?, ?, ?)
-        ")->execute([
-            $request_id,
-            $user_id,
-            $status_admin,
-            $status_teknisi,
-            $keterangan
-        ]);
-
-        if ($technician_id) {
-            $conn->prepare("
-                INSERT INTO tasks
-                (request_id, technician_id, status_awal, status_akhir, catatan)
-                VALUES (?, ?, 'open', 'process', 'Ditugaskan oleh admin')
-            ")->execute([$request_id, $technician_id]);
-        }
-    }
-}
-
-/* HANDLE APPROVE */
-if (isset($_POST['approve'])) {
-    $request_id = $_POST['request_id'];
-    $technician_id = $_POST['technician_id'];
-
-    // Ubah status request jadi 'approve'
-    $conn->prepare("
-        UPDATE request SET status='approve'
-        WHERE request_id=?
-    ")->execute([$request_id]);
-
-    // Assign teknisi di tabel tasks
-    $conn->prepare("
-        INSERT INTO tasks
-        (request_id, technician_id, status_awal, status_akhir, catatan)
-        VALUES (?, ?, 'open', 'process', 'Ditugaskan oleh admin')
-    ")->execute([$request_id, $technician_id]);
-
-    // Catat log admin approve
-    $conn->prepare("
+/* ===============================
+   FUNGSI TRIGGER TASK LOG (TEKNISI)
+================================ */
+function triggerTask($conn, $request_id, $status_awal, $status_akhir, $catatan, $user_id)
+{
+    $stmt = $conn->prepare("
         INSERT INTO task_log
         (request_id, user_id, status_admin, status_teknisi, keterangan)
         VALUES (?, ?, ?, ?, ?)
-    ")->execute([
+    ");
+    $stmt->execute([
         $request_id,
         $user_id,
-        'approved', // hanya untuk log admin
-        '-',        // teknisi belum update
-        'Disetujui admin'
+        $status_awal,     // status sebelum
+        $status_akhir,    // status sesudah
+        $catatan
     ]);
-
-    header("Location: dashboard.php");
-    exit;
 }
 
+/* ===============================
+   HANDLE UPDATE TEKNISI
+================================ */
+$error = '';
+if (isset($_POST['update'])) {
 
+    // ambil status awal
+    $stmt = $conn->prepare("SELECT status FROM request WHERE request_id=?");
+    $stmt->execute([$_POST['request_id']]);
+    $status_awal = $stmt->fetchColumn();
 
-/* HANDLE REJECT */
-if (isset($_POST['reject'])) {
-    $conn->prepare("
-        UPDATE request SET status='reject'
-        WHERE request_id=?
-    ")->execute([$_POST['request_id']]);
+    // validasi state machine
+    $allowed_transitions = [
+        'approve' => ['process'],    // admin approve -> teknisi bisa mulai process
+        'process' => ['done'],       // process -> done
+        'done'    => []              // done -> tidak bisa update lagi
+    ];
 
-    triggerTask(
-        $conn,
-        $_POST['request_id'],
-        $user_id,
-        'reject',
-        '-',
-        $_POST['catatan']
-    );
+    if (!isset($allowed_transitions[$status_awal])) {
+        $error = "Status saat ini ('$status_awal') tidak bisa diubah!";
+    } elseif (!in_array($_POST['status'], $allowed_transitions[$status_awal])) {
+        $error = "Perubahan status tidak valid dari '$status_awal' ke '{$_POST['status']}'!";
+    } else {
+        // update status request
+        $conn->prepare("UPDATE request SET status=? WHERE request_id=?")
+            ->execute([$_POST['status'], $_POST['request_id']]);
 
-    header("Location: dashboard.php");
-    exit;
+        // log aksi teknisi
+        triggerTask(
+            $conn,
+            $_POST['request_id'],
+            $status_awal,
+            $_POST['status'],
+            $_POST['catatan'],
+            $user_id
+        );
+
+        header("Location: dashboard.php");
+        exit;
+    }
 }
 
-/* DATA TEKNISI */
-$teknisi = $conn->query("
-    SELECT user_id, nama FROM users WHERE role='teknisi'
-")->fetchAll();
+/* ===============================
+   DATA REQUEST TEKNISI (approved admin)
+================================ */
+/* ===============================
+   DATA REQUEST TEKNISI (approved admin)
+================================ */
+$data = $conn->prepare("
+    SELECT r.*,
+           t_log.keterangan AS catatan_terakhir
+    FROM request r
+    JOIN tasks t ON r.request_id = t.request_id
+    LEFT JOIN (
+        SELECT request_id, keterangan
+        FROM task_log
+        WHERE user_id = ?
+        ORDER BY log_id DESC
+    ) t_log ON r.request_id = t_log.request_id
+    WHERE t.technician_id = ?
+    AND r.status != 'open'
+    GROUP BY r.request_id
+");
+$data->execute([$user_id, $user_id]);
+$data = $data->fetchAll();
 
-/* SEARCH */
-$search = $_GET['search'] ?? '';
 
-$sql = "
-SELECT 
-    r.*,
-    u.nama AS pelapor,
-    ut.nama AS teknisi
-FROM request r
-JOIN users u ON r.user_id = u.user_id
-LEFT JOIN tasks t ON r.request_id = t.request_id
-LEFT JOIN users ut ON t.technician_id = ut.user_id
-WHERE 1=1
-";
-
-$params = [];
-
-if (!empty($search)) {
-    $sql .= "
-        AND (
-            r.judul LIKE ?
-            OR r.status LIKE ?
-            OR r.lokasi LIKE ?
-            OR r.tanggal_lapor LIKE ?
-            OR u.nama LIKE ?
-            OR ut.nama LIKE ?
-        )
-    ";
-
-    $like = "%$search%";
-    $params = array_fill(0, 6, $like);
-}
-
-$sql .= " ORDER BY r.tanggal_lapor DESC";
-
-$stmt = $conn->prepare($sql);
-$stmt->execute($params);
-$data = $stmt->fetchAll();
-
-/* STATISTIK */
-$stat = $conn->query("
-    SELECT status, COUNT(*) total
-    FROM request
-    GROUP BY status
-")->fetchAll();
 ?>
 
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Dashboard Admin</title>
+    <title>Dashboard Teknisi</title>
 </head>
-
 <body>
-
-<h2>Dashboard Admin</h2>
+<h2>Dashboard Teknisi</h2>
 <a href="../logout.php">Logout</a>
 
-<hr>
+<?php if ($error): ?>
+    <p style="color:red;"><?= $error ?></p>
+<?php endif; ?>
 
-<h3>Statistik Laporan</h3>
 <table border="1" cellpadding="5">
 <tr>
-    <th>Status</th>
-    <th>Total</th>
-</tr>
-<?php foreach ($stat as $s): ?>
-<tr>
-    <td><?= $s['status'] ?></td>
-    <td><?= $s['total'] ?></td>
-</tr>
-<?php endforeach; ?>
-</table>
-
-<hr>
-
-<h3>Search Laporan</h3>
-<form method="get">
-    <input 
-        type="text" 
-        name="search" 
-        placeholder="Cari judul / pelapor / teknisi / status / lokasi / tanggal"
-        value="<?= htmlspecialchars($_GET['search'] ?? '') ?>"
-        autocomplete="off"
-    >
-    <button type="submit">Filter</button>
-</form>
-
-<hr>
-
-<h3>Data Laporan</h3>
-<table border="1" cellpadding="5">
-<tr>
-    <th>No</th>
-    <th>Pelapor</th>
     <th>Judul</th>
     <th>Deskripsi</th>
-    <th>Foto</th>
     <th>Lokasi</th>
-    <th>Teknisi</th>
+    <th>Fotoy</th>
     <th>Status</th>
-    <th>Aksi</th>
+
+    <th>Update</th>
+      <th>Catatn</th>
 </tr>
 
-<?php $no=1; foreach ($data as $d): ?>
+<?php foreach ($data as $d): ?>
 <tr>
-    <td><?= $no++ ?></td>
-    <td><?= htmlspecialchars($d['pelapor']) ?></td>
-    <td><?= htmlspecialchars($d['judul']) ?></td>
-    <td><?= htmlspecialchars($d['deskripsi']) ?></td>
+<td><?= htmlspecialchars($d['judul']) ?></td>
+<td><?= htmlspecialchars($d['deskripsi']) ?></td>
+    <td><?= htmlspecialchars($d['lokasi']) ?></td>
+
     <td align="center">
         <?php if (!empty($d['foto'])):  ?>
             <img src="../uploads/<?= htmlspecialchars($d['foto']) ?>"
@@ -216,31 +142,32 @@ $stat = $conn->query("
             <i>-</i>
         <?php endif; ?>
     </td>
-    <td><?= htmlspecialchars($d['lokasi']) ?></td>
-    <td><?= htmlspecialchars($d['teknisi'] ?? '-') ?></td>
-    <td><?= htmlspecialchars($d['status']) ?></td>
-    <td>
-        <?php if ($d['status'] == 'open'): ?>
-        <form method="post" style="display:inline;">
-            <input type="hidden" name="request_id" value="<?= $d['request_id'] ?>">
-            <select name="technician_id" required>
-                <?php foreach ($teknisi as $t): ?>
-                    <option value="<?= $t['user_id'] ?>"><?= htmlspecialchars($t['nama']) ?></option>
-                <?php endforeach; ?>
-            </select>
-            <button name="approve">Approve</button>
-        </form>
+<td><?= htmlspecialchars($d['status']) ?></td>
 
-        <form method="post" style="display:inline;">
-            <input type="hidden" name="request_id" value="<?= $d['request_id'] ?>">
-            <input type="text" name="catatan" placeholder="Alasan reject" required>
-            <button name="reject">Reject</button>
-        </form>
+
+<td>
+<?php if ($d['status'] != 'done'): ?>
+<form method="post">
+    <input type="hidden" name="request_id" value="<?= $d['request_id'] ?>">
+    <select name="status" required>
+        <?php if ($d['status'] == 'approve'): ?>
+            <option value="process">Process</option>
+        <?php elseif ($d['status'] == 'process'): ?>
+            <option value="done">Done</option>
         <?php endif; ?>
-    </td>
+    </select><br>
+    <textarea name="catatan" placeholder="Catatan teknisi"></textarea><br>
+    <button name="update">Update</button>
+</form>
+<?php else: ?>
+    <em>Status sudah selesai</em>
+<?php endif; ?>
+</td>
+
+<td><?= htmlspecialchars($d['catatan_terakhir'] ?? '-') ?></td>
+
 </tr>
 <?php endforeach; ?>
 </table>
-
 </body>
 </html>

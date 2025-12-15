@@ -1,173 +1,87 @@
-<?php
-session_start();
-require '../config.php';
+/* style.css */
 
-/* ===============================
-   CEK LOGIN
-================================ */
-if (!isset($_SESSION['login'])) {
-    header("Location: login.php");
-    exit;
+/* Reset sedikit */
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f9;
+    margin: 20px;
+    color: #333;
 }
 
-$user_id = $_SESSION['user_id'];
-$role    = $_SESSION['role'];
-
-/* ===============================
-   FUNGSI TRIGGER TASK LOG (TEKNISI)
-================================ */
-function triggerTask($conn, $request_id, $status_awal, $status_akhir, $catatan, $user_id)
-{
-    $stmt = $conn->prepare("
-        INSERT INTO task_log
-        (request_id, user_id, status_admin, status_teknisi, keterangan)
-        VALUES (?, ?, ?, ?, ?)
-    ");
-    $stmt->execute([
-        $request_id,
-        $user_id,
-        $status_awal,     // status sebelum
-        $status_akhir,    // status sesudah
-        $catatan
-    ]);
+/* Judul */
+h2, h3 {
+    color: #2c3e50;
 }
 
-/* ===============================
-   HANDLE UPDATE TEKNISI
-================================ */
-$error = '';
-if (isset($_POST['update'])) {
-
-    // ambil status awal
-    $stmt = $conn->prepare("SELECT status FROM request WHERE request_id=?");
-    $stmt->execute([$_POST['request_id']]);
-    $status_awal = $stmt->fetchColumn();
-
-    // validasi state machine
-    $allowed_transitions = [
-        'approve' => ['process'],    // admin approve -> teknisi bisa mulai process
-        'process' => ['done'],       // process -> done
-        'done'    => []              // done -> tidak bisa update lagi
-    ];
-
-    if (!isset($allowed_transitions[$status_awal])) {
-        $error = "Status saat ini ('$status_awal') tidak bisa diubah!";
-    } elseif (!in_array($_POST['status'], $allowed_transitions[$status_awal])) {
-        $error = "Perubahan status tidak valid dari '$status_awal' ke '{$_POST['status']}'!";
-    } else {
-        // update status request
-        $conn->prepare("UPDATE request SET status=? WHERE request_id=?")
-            ->execute([$_POST['status'], $_POST['request_id']]);
-
-        // log aksi teknisi
-        triggerTask(
-            $conn,
-            $_POST['request_id'],
-            $status_awal,
-            $_POST['status'],
-            $_POST['catatan'],
-            $user_id
-        );
-
-        header("Location: dashboard.php");
-        exit;
-    }
+/* Link Logout */
+a {
+    text-decoration: none;
+    color: #e74c3c;
+    font-weight: bold;
 }
 
-/* ===============================
-   DATA REQUEST TEKNISI (approved admin)
-================================ */
-/* ===============================
-   DATA REQUEST TEKNISI (approved admin)
-================================ */
-$data = $conn->prepare("
-    SELECT r.*,
-           t_log.keterangan AS catatan_terakhir
-    FROM request r
-    JOIN tasks t ON r.request_id = t.request_id
-    LEFT JOIN (
-        SELECT request_id, keterangan
-        FROM task_log
-        WHERE user_id = ?
-        ORDER BY log_id DESC
-    ) t_log ON r.request_id = t_log.request_id
-    WHERE t.technician_id = ?
-    AND r.status != 'open'
-    GROUP BY r.request_id
-");
-$data->execute([$user_id, $user_id]);
-$data = $data->fetchAll();
+a:hover {
+    text-decoration: underline;
+}
 
+/* Tabel */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 20px;
+    background-color: #fff;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
 
-?>
+table th, table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Dashboard Teknisi</title>
-</head>
-<body>
-<h2>Dashboard Teknisi</h2>
-<a href="../logout.php">Logout</a>
+table th {
+    background-color: #3498db;
+    color: white;
+}
 
-<?php if ($error): ?>
-    <p style="color:red;"><?= $error ?></p>
-<?php endif; ?>
+/* Baris ganjil */
+table tr:nth-child(odd) {
+    background-color: #f9f9f9;
+}
 
-<table border="1" cellpadding="5">
-<tr>
-    <th>Judul</th>
-    <th>Deskripsi</th>
-    <th>Lokasi</th>
-    <th>Fotoy</th>
-    <th>Status</th>
+/* Form */
+form input[type="text"], form select {
+    padding: 5px;
+    margin-right: 5px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+}
 
-    <th>Update</th>
-      <th>Catatn</th>
-</tr>
+form button {
+    padding: 5px 10px;
+    background-color: #2ecc71;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
 
-<?php foreach ($data as $d): ?>
-<tr>
-<td><?= htmlspecialchars($d['judul']) ?></td>
-<td><?= htmlspecialchars($d['deskripsi']) ?></td>
-    <td><?= htmlspecialchars($d['lokasi']) ?></td>
+form button:hover {
+    background-color: #27ae60;
+}
 
-    <td align="center">
-        <?php if (!empty($d['foto'])):  ?>
-            <img src="../uploads/<?= htmlspecialchars($d['foto']) ?>"
-                width="120"
-                alt="foto request">
-        <?php else: ?>
-            <i>-</i>
-        <?php endif; ?>
-    </td>
-<td><?= htmlspecialchars($d['status']) ?></td>
+/* Button Reject */
+form button[name="reject"] {
+    background-color: #e74c3c;
+}
 
+form button[name="reject"]:hover {
+    background-color: #c0392b;
+}
 
-<td>
-<?php if ($d['status'] != 'done'): ?>
-<form method="post">
-    <input type="hidden" name="request_id" value="<?= $d['request_id'] ?>">
-    <select name="status" required>
-        <?php if ($d['status'] == 'approve'): ?>
-            <option value="process">Process</option>
-        <?php elseif ($d['status'] == 'process'): ?>
-            <option value="done">Done</option>
-        <?php endif; ?>
-    </select><br>
-    <textarea name="catatan" placeholder="Catatan teknisi"></textarea><br>
-    <button name="update">Update</button>
-</form>
-<?php else: ?>
-    <em>Status sudah selesai</em>
-<?php endif; ?>
-</td>
+/* Foto */
+td img {
+    border-radius: 5px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
 
-<td><?= htmlspecialchars($d['catatan_terakhir'] ?? '-') ?></td>
-
-</tr>
-<?php endforeach; ?>
-</table>
-</body>
-</html>

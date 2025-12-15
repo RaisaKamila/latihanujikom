@@ -14,6 +14,8 @@ if (isset($_POST['tambah'])) {
     $role     = $_POST['role'];
 
     if ($nama && $email && $password && $role) {
+       $password_hash = password_hash($password, PASSWORD_DEFAULT);
+
         $password_hash = md5($password); // sesuai kebiasaan kamu
 
         $stmt = $conn->prepare("
@@ -221,3 +223,4 @@ $isPrint = isset($_GET['print']);
 
 </body>
 </html>
+
